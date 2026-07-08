@@ -1,0 +1,15 @@
+# Build output
+bin/
+build/
+
+# Archives / backups
+archive/
+backup/
+
+# macOS
+.DS_Store
+
+# C build artifacts
+*.o
+*.out
+*.dSYM/
