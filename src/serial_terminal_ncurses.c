@@ -36,7 +36,7 @@
  * PROGRAM LIMITS
  ******************************************************************************/
 #define MAX_SERIAL_PORTS        32
-#define MAX_DEVICE_PATH_LENGTH  256
+#define MAX_DEVICE_PATH_LENGTH  512
 #define MAX_COMMAND_LENGTH      80
 #define MAX_MENU_LINE_LENGTH    64
 
@@ -121,6 +121,8 @@ static int device_name_is_serial(const char *device_name)
         return 0;
     }
 
+#ifdef __APPLE__
+
     if (strstr(device_name, "Bluetooth") != NULL)
     {
         return 0;
@@ -145,6 +147,20 @@ static int device_name_is_serial(const char *device_name)
     {
         return 1;
     }
+
+#elif defined(__linux__)
+
+    if (strncmp(device_name, "ttyUSB", 6) == 0)
+    {
+        return 1;
+    }
+
+    if (strncmp(device_name, "ttyACM", 6) == 0)
+    {
+        return 1;
+    }
+
+#endif
 
     return 0;
 }
@@ -647,6 +663,17 @@ int main(void)
     if (port_count <= 0)
     {
         printf("No usable USB serial ports found.\n");
+        printf("Try:\n");
+
+#ifdef __APPLE__
+        printf("    ls /dev/cu.*\n");
+#elif defined(__linux__)
+        printf("    ls /dev/ttyACM*\n");
+        printf("    ls /dev/ttyUSB*\n");
+#else
+        printf("    Check your system serial device list.\n");
+#endif
+
         return EXIT_FAILURE;
     }
 

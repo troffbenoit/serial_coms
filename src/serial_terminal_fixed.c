@@ -1,31 +1,55 @@
 /******************************************************************************
+ *
  * FILE:
  *     serial_terminal.c
  *
  * DATE:
  *     2026-05-28
  *
- * AUTHOR: Stan Benoit May 28, 2026
- *
  * PROJECT:
- *     FPGA / Arduino / NanoBee UART test terminal.
- *
- * CHANGE LOG:
- *     2026-05-28:
- *         - Added serial port scan menu.
- *         - Added baud/data/parity/stop-bit setup menu.
- *         - Added local command-line editing.
- *         - Fixed Backspace/Delete so they do NOT corrupt device commands.
- *         - Added select() so incoming serial text displays quickly.
- *         - Removed VTIME receive delay that made output look slow.
- *         - Added verbose flight-ready comments for learning.
+ *     Serial Communications Utilities
  *
  * PURPOSE:
  *     Interactive serial terminal for talking to embedded UART devices.
  *
  *     Known-good targets:
- *         - Arduino NanoBee NANO_PWM_VENOM firmware.
- *         - Future FPGA UART "number Hello" transmitter test.
+ *         1. Arduino NanoBee NANO_PWM_VENOM firmware.
+ *         2. Future FPGA UART "number Hello" transmitter test.
+ *
+ * FLIGHT-READY DESIGN GOALS:
+ *     1. Present available serial ports to the user.
+ *     2. Let the user choose UART settings.
+ *     3. Display incoming device text like a simple old terminal.
+ *     4. Locally edit typed commands before sending them.
+ *     5. Prevent Backspace/Delete bytes from corrupting device commands.
+ *     6. Send only clean completed command lines to the device.
+ *     7. Use select() so serial receive is fast and responsive.
+ *     8. Restore the keyboard cleanly on exit.
+ *
+ * CHANGE LOG:
+ *
+ *     2026-05-28
+ *         Initial serial terminal version.
+ *
+ *     2026-05-28
+ *         Added serial port scanning.
+ *
+ *     2026-05-28
+ *         Added interactive UART configuration menus.
+ *
+ *     2026-05-28
+ *         Added local command-line editing.
+ *
+ *     2026-05-28
+ *         Fixed Backspace/Delete handling so control bytes are not sent to
+ *         the embedded device.
+ *
+ *     2026-05-28
+ *         Added select() so incoming serial text displays quickly.
+ *
+ *     2026-05-28
+ *         Expanded comments to include INPUTS, OUTPUTS, RETURNS, and
+ *         SIDE EFFECTS for functions.
  *
  ******************************************************************************/
 
@@ -41,14 +65,23 @@
 
 /******************************************************************************
  * PROGRAM LIMITS
+ *
+ * PURPOSE:
+ *     Define fixed program limits.
+ *
+ * NOTES:
+ *     Fixed limits are used intentionally to avoid dynamic memory allocation.
  ******************************************************************************/
 #define MAX_SERIAL_PORTS        32
-#define MAX_DEVICE_PATH_LENGTH  256
+#define MAX_DEVICE_PATH_LENGTH  512
 #define MAX_COMMAND_LENGTH      80
 #define MAX_MENU_LINE_LENGTH    64
 
 /******************************************************************************
  * ASCII CONTROL CODES
+ *
+ * PURPOSE:
+ *     Give readable names to control characters used by the terminal.
  ******************************************************************************/
 #define ASCII_BACKSPACE         0x08
 #define ASCII_DELETE            0x7F
@@ -58,6 +91,9 @@
 
 /******************************************************************************
  * PARITY OPTIONS
+ *
+ * PURPOSE:
+ *     Human-readable integer codes for serial parity selection.
  ******************************************************************************/
 #define PARITY_NONE             0
 #define PARITY_EVEN             1
@@ -72,11 +108,57 @@
  ******************************************************************************/
 typedef struct
 {
-    speed_t baud_rate_constant;   /* termios baud constant, example B115200. */
-    int     baud_rate_number;     /* Human-readable baud number, example 115200. */
-    int     data_bits;            /* Number of UART data bits, usually 8. */
-    int     parity_mode;          /* PARITY_NONE, PARITY_EVEN, or PARITY_ODD. */
-    int     stop_bits;            /* Number of UART stop bits, 1 or 2. */
+    /**************************************************************************
+     * baud_rate_constant
+     *
+     * PURPOSE:
+     *     termios baud-rate constant, such as B9600 or B115200.
+     **************************************************************************/
+    speed_t baud_rate_constant;
+
+    /**************************************************************************
+     * baud_rate_number
+     *
+     * PURPOSE:
+     *     Human-readable baud-rate number printed in the status banner.
+     **************************************************************************/
+    int baud_rate_number;
+
+    /**************************************************************************
+     * data_bits
+     *
+     * PURPOSE:
+     *     UART data width.
+     *
+     * VALID VALUES:
+     *     7 or 8.
+     **************************************************************************/
+    int data_bits;
+
+    /**************************************************************************
+     * parity_mode
+     *
+     * PURPOSE:
+     *     Selected UART parity mode.
+     *
+     * VALID VALUES:
+     *     PARITY_NONE
+     *     PARITY_EVEN
+     *     PARITY_ODD
+     **************************************************************************/
+    int parity_mode;
+
+    /**************************************************************************
+     * stop_bits
+     *
+     * PURPOSE:
+     *     UART stop-bit count.
+     *
+     * VALID VALUES:
+     *     1 or 2.
+     **************************************************************************/
+    int stop_bits;
+
 } serial_settings_t;
 
 /******************************************************************************
@@ -84,11 +166,25 @@ typedef struct
  *     read_menu_number
  *
  * PURPOSE:
- *     Read one menu number using fgets().
+ *     Read one numeric menu selection from standard input.
  *
- * WHY NOT scanf:
- *     scanf() mixed with raw read() can leave buffered input behind.
- *     fgets() keeps menu input predictable before raw terminal mode begins.
+ * INPUTS:
+ *     default_value
+ *         Value returned if the user presses ENTER or enters invalid text.
+ *
+ * OUTPUTS:
+ *     None.
+ *
+ * RETURNS:
+ *     Parsed integer
+ *         User typed a valid integer.
+ *
+ *     default_value
+ *         User pressed ENTER, input failed, or no valid integer was found.
+ *
+ * SIDE EFFECTS:
+ *     Reads from stdin.
+ *
  ******************************************************************************/
 static int read_menu_number(int default_value)
 {
@@ -124,6 +220,24 @@ static int read_menu_number(int default_value)
  *
  * PURPOSE:
  *     Decide whether a /dev entry looks like a usable USB serial device.
+ *
+ * INPUTS:
+ *     device_name
+ *         File name from the /dev directory.
+ *
+ * OUTPUTS:
+ *     None.
+ *
+ * RETURNS:
+ *     1
+ *         Device name appears to be a usable USB serial device.
+ *
+ *     0
+ *         Device name is NULL or does not match accepted serial patterns.
+ *
+ * SIDE EFFECTS:
+ *     None.
+ *
  ******************************************************************************/
 static int device_name_is_serial(const char *device_name)
 {
@@ -137,6 +251,7 @@ static int device_name_is_serial(const char *device_name)
         return 0;
     }
 
+#ifdef __APPLE__
     if (strncmp(device_name, "cu.usbserial", 12) == 0)
     {
         return 1;
@@ -156,6 +271,17 @@ static int device_name_is_serial(const char *device_name)
     {
         return 1;
     }
+#elif defined(__linux__)
+    if (strncmp(device_name, "ttyUSB", 6) == 0)
+    {
+        return 1;
+    }
+
+    if (strncmp(device_name, "ttyACM", 6) == 0)
+    {
+        return 1;
+    }
+#endif
 
     return 0;
 }
@@ -166,6 +292,27 @@ static int device_name_is_serial(const char *device_name)
  *
  * PURPOSE:
  *     Scan /dev and collect usable serial port paths.
+ *
+ * INPUTS:
+ *     ports
+ *         Two-dimensional character array where discovered device paths
+ *         will be stored.
+ *
+ * OUTPUTS:
+ *     ports
+ *         Filled with zero or more full serial device paths.
+ *
+ * RETURNS:
+ *     > 0
+ *         Number of usable serial ports discovered.
+ *
+ *     0
+ *         No usable serial ports found or /dev could not be opened.
+ *
+ * SIDE EFFECTS:
+ *     Opens, reads, and closes the /dev directory.
+ *     Prints an error message if /dev cannot be opened.
+ *
  ******************************************************************************/
 static int scan_serial_ports(char ports[MAX_SERIAL_PORTS][MAX_DEVICE_PATH_LENGTH])
 {
@@ -190,9 +337,9 @@ static int scan_serial_ports(char ports[MAX_SERIAL_PORTS][MAX_DEVICE_PATH_LENGTH
             if (port_count < MAX_SERIAL_PORTS)
             {
                 snprintf(ports[port_count],
-                         MAX_DEVICE_PATH_LENGTH,
-                         "/dev/%s",
-                         entry->d_name);
+                        MAX_DEVICE_PATH_LENGTH,
+                        "/dev/%s",
+                        entry->d_name);
 
                 port_count++;
             }
@@ -209,10 +356,32 @@ static int scan_serial_ports(char ports[MAX_SERIAL_PORTS][MAX_DEVICE_PATH_LENGTH
  *     choose_serial_port
  *
  * PURPOSE:
- *     Present detected serial ports and return selected array index.
+ *     Present detected serial ports and let the user select one.
+ *
+ * INPUTS:
+ *     ports
+ *         Array containing discovered serial device paths.
+ *
+ *     port_count
+ *         Number of valid entries in ports.
+ *
+ * OUTPUTS:
+ *     None.
+ *
+ * RETURNS:
+ *     >= 0
+ *         Selected port array index.
+ *
+ *     -1
+ *         Invalid user selection.
+ *
+ * SIDE EFFECTS:
+ *     Prints menu text to stdout.
+ *     Reads user input from stdin.
+ *
  ******************************************************************************/
 static int choose_serial_port(char ports[MAX_SERIAL_PORTS][MAX_DEVICE_PATH_LENGTH],
-                              int port_count)
+        int port_count)
 {
     int index;
     int user_choice;
@@ -226,7 +395,7 @@ static int choose_serial_port(char ports[MAX_SERIAL_PORTS][MAX_DEVICE_PATH_LENGT
     }
 
     printf("--------------------------------------------------\n");
-    printf("Select serial port number: ");
+    printf("Select serial port number [1]: ");
     fflush(stdout);
 
     user_choice = read_menu_number(1);
@@ -244,7 +413,26 @@ static int choose_serial_port(char ports[MAX_SERIAL_PORTS][MAX_DEVICE_PATH_LENGT
  *     choose_baud_rate
  *
  * PURPOSE:
- *     Let user select UART baud rate.
+ *     Let the user select the UART baud rate.
+ *
+ * INPUTS:
+ *     settings
+ *         Pointer to UART settings structure.
+ *
+ * OUTPUTS:
+ *     settings->baud_rate_constant
+ *         Updated termios baud-rate constant.
+ *
+ *     settings->baud_rate_number
+ *         Updated human-readable baud-rate number.
+ *
+ * RETURNS:
+ *     None.
+ *
+ * SIDE EFFECTS:
+ *     Prints menu text to stdout.
+ *     Reads user input from stdin.
+ *
  ******************************************************************************/
 static void choose_baud_rate(serial_settings_t *settings)
 {
@@ -298,7 +486,23 @@ static void choose_baud_rate(serial_settings_t *settings)
  *     choose_data_bits
  *
  * PURPOSE:
- *     Let user select serial data width.
+ *     Let the user select 7-bit or 8-bit UART data width.
+ *
+ * INPUTS:
+ *     settings
+ *         Pointer to UART settings structure.
+ *
+ * OUTPUTS:
+ *     settings->data_bits
+ *         Updated to 7 or 8.
+ *
+ * RETURNS:
+ *     None.
+ *
+ * SIDE EFFECTS:
+ *     Prints menu text to stdout.
+ *     Reads user input from stdin.
+ *
  ******************************************************************************/
 static void choose_data_bits(serial_settings_t *settings)
 {
@@ -329,7 +533,23 @@ static void choose_data_bits(serial_settings_t *settings)
  *     choose_parity
  *
  * PURPOSE:
- *     Let user select parity mode.
+ *     Let the user select UART parity mode.
+ *
+ * INPUTS:
+ *     settings
+ *         Pointer to UART settings structure.
+ *
+ * OUTPUTS:
+ *     settings->parity_mode
+ *         Updated to PARITY_NONE, PARITY_EVEN, or PARITY_ODD.
+ *
+ * RETURNS:
+ *     None.
+ *
+ * SIDE EFFECTS:
+ *     Prints menu text to stdout.
+ *     Reads user input from stdin.
+ *
  ******************************************************************************/
 static void choose_parity(serial_settings_t *settings)
 {
@@ -365,7 +585,23 @@ static void choose_parity(serial_settings_t *settings)
  *     choose_stop_bits
  *
  * PURPOSE:
- *     Let user select one or two stop bits.
+ *     Let the user select one or two UART stop bits.
+ *
+ * INPUTS:
+ *     settings
+ *         Pointer to UART settings structure.
+ *
+ * OUTPUTS:
+ *     settings->stop_bits
+ *         Updated to 1 or 2.
+ *
+ * RETURNS:
+ *     None.
+ *
+ * SIDE EFFECTS:
+ *     Prints menu text to stdout.
+ *     Reads user input from stdin.
+ *
  ******************************************************************************/
 static void choose_stop_bits(serial_settings_t *settings)
 {
@@ -397,9 +633,33 @@ static void choose_stop_bits(serial_settings_t *settings)
  *
  * PURPOSE:
  *     Apply selected UART configuration to the opened serial port.
+ *
+ * INPUTS:
+ *     serial_fd
+ *         File descriptor for the already-opened serial device.
+ *
+ *     settings
+ *         Pointer to selected UART settings.
+ *
+ * OUTPUTS:
+ *     Operating system serial-port configuration is updated.
+ *
+ * RETURNS:
+ *     0
+ *         Serial port configured successfully.
+ *
+ *     -1
+ *         Serial configuration failed.
+ *
+ * SIDE EFFECTS:
+ *     Calls tcgetattr().
+ *     Calls tcsetattr().
+ *     Changes serial device behavior.
+ *     Prints error messages on failure.
+ *
  ******************************************************************************/
 static int configure_serial_port(int serial_fd,
-                                 const serial_settings_t *settings)
+        const serial_settings_t *settings)
 {
     struct termios serial_config;
 
@@ -459,8 +719,12 @@ static int configure_serial_port(int serial_fd,
 
     /**************************************************************************
      * FAST NON-BLOCKING SERIAL READS:
-     *     VMIN  = 0 means read() can return with zero bytes.
-     *     VTIME = 0 means no 0.1-second timeout delay.
+     *
+     * VMIN:
+     *     0 means read() may return with zero bytes.
+     *
+     * VTIME:
+     *     0 means do not wait in 0.1-second timeout units.
      **************************************************************************/
     serial_config.c_cc[VMIN]  = 0;
     serial_config.c_cc[VTIME] = 0;
@@ -479,7 +743,29 @@ static int configure_serial_port(int serial_fd,
  *     configure_keyboard_raw_mode
  *
  * PURPOSE:
- *     Put local keyboard into raw mode after setup is complete.
+ *     Put the local keyboard into raw mode after setup is complete.
+ *
+ * INPUTS:
+ *     old_keyboard_config
+ *         Pointer to structure where original keyboard settings will be saved.
+ *
+ * OUTPUTS:
+ *     old_keyboard_config
+ *         Filled with original keyboard settings.
+ *
+ * RETURNS:
+ *     0
+ *         Keyboard configured successfully.
+ *
+ *     -1
+ *         Keyboard configuration failed.
+ *
+ * SIDE EFFECTS:
+ *     Calls tcgetattr().
+ *     Calls tcsetattr().
+ *     Changes the user's terminal keyboard behavior until restored.
+ *     Prints error messages on failure.
+ *
  ******************************************************************************/
 static int configure_keyboard_raw_mode(struct termios *old_keyboard_config)
 {
@@ -511,7 +797,24 @@ static int configure_keyboard_raw_mode(struct termios *old_keyboard_config)
  *     parity_name
  *
  * PURPOSE:
- *     Convert parity setting to printable text.
+ *     Convert parity setting integer to printable text.
+ *
+ * INPUTS:
+ *     parity_mode
+ *         One of PARITY_NONE, PARITY_EVEN, or PARITY_ODD.
+ *
+ * OUTPUTS:
+ *     None.
+ *
+ * RETURNS:
+ *     Pointer to constant string:
+ *         "None"
+ *         "Even"
+ *         "Odd"
+ *
+ * SIDE EFFECTS:
+ *     None.
+ *
  ******************************************************************************/
 static const char *parity_name(int parity_mode)
 {
@@ -533,12 +836,49 @@ static const char *parity_name(int parity_mode)
  *     process_keyboard_character
  *
  * PURPOSE:
- *     Locally edit command line and send only clean commands on ENTER.
+ *     Locally edit a command line and send only clean completed commands
+ *     to the serial device when ENTER is pressed.
+ *
+ * CRITICAL SAFETY RULE:
+ *     Backspace/Delete edits the local command buffer only.
+ *     Backspace/Delete is never sent to the embedded device.
+ *
+ * INPUTS:
+ *     serial_fd
+ *         File descriptor for the opened serial device.
+ *
+ *     keyboard_char
+ *         One character read from the local keyboard.
+ *
+ *     command_buffer
+ *         Local command buffer.
+ *
+ *     command_length
+ *         Pointer to current command length.
+ *
+ * OUTPUTS:
+ *     command_buffer
+ *         Modified when the user types, erases, or submits a command.
+ *
+ *     command_length
+ *         Updated to match the current command buffer length.
+ *
+ * RETURNS:
+ *     0
+ *         Continue program execution.
+ *
+ *     1
+ *         User requested exit by pressing CTRL-C.
+ *
+ * SIDE EFFECTS:
+ *     Writes local echo text to stdout.
+ *     Writes completed command lines to the serial device.
+ *
  ******************************************************************************/
 static int process_keyboard_character(int serial_fd,
-                                      unsigned char keyboard_char,
-                                      char command_buffer[MAX_COMMAND_LENGTH + 1],
-                                      size_t *command_length)
+        unsigned char keyboard_char,
+        char command_buffer[MAX_COMMAND_LENGTH + 1],
+        size_t *command_length)
 {
     if (keyboard_char == ASCII_CTRL_C)
     {
@@ -546,7 +886,7 @@ static int process_keyboard_character(int serial_fd,
     }
 
     if ((keyboard_char == ASCII_BACKSPACE) ||
-        (keyboard_char == ASCII_DELETE))
+            (keyboard_char == ASCII_DELETE))
     {
         if (*command_length > 0)
         {
@@ -559,7 +899,7 @@ static int process_keyboard_character(int serial_fd,
     }
 
     if ((keyboard_char == ASCII_CARRIAGE_RETURN) ||
-        (keyboard_char == ASCII_LINE_FEED))
+            (keyboard_char == ASCII_LINE_FEED))
     {
         write(STDOUT_FILENO, "\r\n", 2);
 
@@ -594,7 +934,21 @@ static int process_keyboard_character(int serial_fd,
  *     process_serial_character
  *
  * PURPOSE:
- *     Display incoming serial text like a simple old terminal.
+ *     Display one incoming serial character like a simple old terminal.
+ *
+ * INPUTS:
+ *     serial_char
+ *         One byte received from the embedded device.
+ *
+ * OUTPUTS:
+ *     None.
+ *
+ * RETURNS:
+ *     None.
+ *
+ * SIDE EFFECTS:
+ *     Writes received text to stdout.
+ *
  ******************************************************************************/
 static void process_serial_character(unsigned char serial_char)
 {
@@ -614,30 +968,115 @@ static void process_serial_character(unsigned char serial_char)
  *
  * PURPOSE:
  *     Program entry point.
+ *
+ * INPUTS:
+ *     None.
+ *
+ * OUTPUTS:
+ *     None.
+ *
+ * RETURNS:
+ *     EXIT_SUCCESS
+ *         Program completed normally.
+ *
+ *     EXIT_FAILURE
+ *         Startup, configuration, or serial-port error occurred.
+ *
+ * SIDE EFFECTS:
+ *     Scans /dev.
+ *     Opens serial device.
+ *     Configures serial device.
+ *     Temporarily changes keyboard terminal settings.
+ *     Reads keyboard input.
+ *     Reads serial input.
+ *     Writes serial output.
+ *
  ******************************************************************************/
 int main(void)
 {
+    /**************************************************************************
+     * SERIAL PORT STORAGE
+     *
+     * PURPOSE:
+     *     Store discovered serial port path names.
+     **************************************************************************/
     char serial_ports[MAX_SERIAL_PORTS][MAX_DEVICE_PATH_LENGTH];
+
+    /**************************************************************************
+     * COMMAND BUFFER STORAGE
+     *
+     * PURPOSE:
+     *     Store the command currently being typed by the user.
+     **************************************************************************/
     char command_buffer[MAX_COMMAND_LENGTH + 1];
 
+    /**************************************************************************
+     * SERIAL PORT STATE VARIABLES
+     *
+     * PURPOSE:
+     *     Track serial-port discovery, selection, and opened file descriptor.
+     **************************************************************************/
     int port_count;
     int selected_port_index;
     int serial_fd;
+
+    /**************************************************************************
+     * PROGRAM CONTROL VARIABLES
+     *
+     * PURPOSE:
+     *     Control the main loop and select() state.
+     **************************************************************************/
     int exit_requested;
     int highest_fd;
     int select_result;
 
+    /**************************************************************************
+     * CHARACTER I/O VARIABLES
+     *
+     * PURPOSE:
+     *     Store one keyboard byte and one serial byte at a time.
+     **************************************************************************/
     unsigned char keyboard_char;
     unsigned char serial_char;
 
+    /**************************************************************************
+     * READ RESULT VARIABLE
+     *
+     * PURPOSE:
+     *     Store return values from read().
+     **************************************************************************/
     ssize_t bytes_read;
 
+    /**************************************************************************
+     * COMMAND LENGTH VARIABLE
+     *
+     * PURPOSE:
+     *     Track how many valid characters are currently in command_buffer.
+     **************************************************************************/
     size_t command_length;
 
+    /**************************************************************************
+     * SELECT FILE DESCRIPTOR SET
+     *
+     * PURPOSE:
+     *     Tell select() which file descriptors to monitor.
+     **************************************************************************/
     fd_set read_fd_set;
 
+    /**************************************************************************
+     * KEYBOARD RESTORE STORAGE
+     *
+     * PURPOSE:
+     *     Save original terminal keyboard settings so they can be restored.
+     **************************************************************************/
     struct termios old_keyboard_config;
 
+    /**************************************************************************
+     * UART SETTINGS STORAGE
+     *
+     * PURPOSE:
+     *     Store the selected serial communication settings.
+     **************************************************************************/
     serial_settings_t settings;
 
     memset(serial_ports, 0, sizeof(serial_ports));
@@ -660,7 +1099,15 @@ int main(void)
     {
         printf("No usable USB serial ports found.\n");
         printf("Try:\n");
+
+#ifdef __APPLE__
         printf("    ls /dev/cu.*\n");
+#elif defined(__linux__)
+        printf("    ls /dev/ttyACM* /dev/ttyUSB* 2>/dev/null\n");
+#else
+        printf("    Check your system serial device list.\n");
+#endif
+
         return EXIT_FAILURE;
     }
 
@@ -678,7 +1125,7 @@ int main(void)
     choose_stop_bits(&settings);
 
     serial_fd = open(serial_ports[selected_port_index],
-                     O_RDWR | O_NOCTTY | O_NONBLOCK);
+            O_RDWR | O_NOCTTY | O_NONBLOCK);
 
     if (serial_fd < 0)
     {
@@ -724,10 +1171,10 @@ int main(void)
         }
 
         select_result = select(highest_fd + 1,
-                               &read_fd_set,
-                               NULL,
-                               NULL,
-                               NULL);
+                &read_fd_set,
+                NULL,
+                NULL,
+                NULL);
 
         if (select_result < 0)
         {
@@ -748,9 +1195,9 @@ int main(void)
             {
                 exit_requested =
                     process_keyboard_character(serial_fd,
-                                               keyboard_char,
-                                               command_buffer,
-                                               &command_length);
+                            keyboard_char,
+                            command_buffer,
+                            &command_length);
             }
         }
 
@@ -774,4 +1221,5 @@ int main(void)
 
     return EXIT_SUCCESS;
 }
+
 

@@ -1,66 +1,65 @@
-###############################################################################
-# FILE:
-#     Makefile
-#
-# DATE:
-#     2026-07-08
-#
-# PROJECT:
-#     Serial Communications Utilities
-#
-# PURPOSE:
-#     Build serial terminal applications from src/ into bin/.
-###############################################################################
-
-CC = clang
-
+CC ?= cc
 CFLAGS = -Wall -Wextra -pedantic
 
-SRC_DIR = src
 BIN_DIR = bin
 BUILD_DIR = build
 
-STANDARD_SOURCE = $(SRC_DIR)/serial_terminal.c
-NCURSES_SOURCE = $(SRC_DIR)/serial_terminal_ncurses.c
+STANDARD_SOURCE = src/serial_terminal.c
+NCURSES_SOURCE = src/serial_terminal_ncurses.c
 
-ARM64_OUTPUT = $(BIN_DIR)/serial_terminal_arm64
-INTEL_OUTPUT = $(BIN_DIR)/serial_terminal_x86_64
-NCURSES_ARM64_OUTPUT = $(BIN_DIR)/serial_terminal_ncurses_arm64
-NCURSES_INTEL_OUTPUT = $(BIN_DIR)/serial_terminal_ncurses_x86_64
+UNAME_S := $(shell uname -s)
+UNAME_M := $(shell uname -m)
 
-all: dirs arm64 intel ncurses_arm64 ncurses_intel
+HOST_OUTPUT = $(BIN_DIR)/serial_terminal_$(UNAME_S)_$(UNAME_M)
+HOST_NCURSES_OUTPUT = $(BIN_DIR)/serial_terminal_ncurses_$(UNAME_S)_$(UNAME_M)
+
+MAC_ARM64_OUTPUT = $(BIN_DIR)/serial_terminal_mac_arm64
+MAC_INTEL_OUTPUT = $(BIN_DIR)/serial_terminal_mac_x86_64
+MAC_NCURSES_ARM64_OUTPUT = $(BIN_DIR)/serial_terminal_ncurses_mac_arm64
+MAC_NCURSES_INTEL_OUTPUT = $(BIN_DIR)/serial_terminal_ncurses_mac_x86_64
+
+all: host
 
 dirs:
 	@mkdir -p $(BIN_DIR)
 	@mkdir -p $(BUILD_DIR)
 
-arm64: dirs
-	$(CC) -arch arm64 $(CFLAGS) -o $(ARM64_OUTPUT) $(STANDARD_SOURCE)
+host: dirs standard ncurses
 
-intel: dirs
-	$(CC) -arch x86_64 $(CFLAGS) -o $(INTEL_OUTPUT) $(STANDARD_SOURCE)
+standard: dirs
+	$(CC) $(CFLAGS) -o $(HOST_OUTPUT) $(STANDARD_SOURCE)
 
-ncurses_arm64: dirs
-	$(CC) -arch arm64 $(CFLAGS) -o $(NCURSES_ARM64_OUTPUT) $(NCURSES_SOURCE) -lncurses
+ncurses: dirs
+	$(CC) $(CFLAGS) -o $(HOST_NCURSES_OUTPUT) $(NCURSES_SOURCE) -lncurses
 
-ncurses_intel: dirs
-	$(CC) -arch x86_64 $(CFLAGS) -o $(NCURSES_INTEL_OUTPUT) $(NCURSES_SOURCE) -lncurses
+mac_all: dirs mac_arm64 mac_intel mac_ncurses_arm64 mac_ncurses_intel
+
+mac_arm64: dirs
+	$(CC) -arch arm64 $(CFLAGS) -o $(MAC_ARM64_OUTPUT) $(STANDARD_SOURCE)
+
+mac_intel: dirs
+	$(CC) -arch x86_64 $(CFLAGS) -o $(MAC_INTEL_OUTPUT) $(STANDARD_SOURCE)
+
+mac_ncurses_arm64: dirs
+	$(CC) -arch arm64 $(CFLAGS) -o $(MAC_NCURSES_ARM64_OUTPUT) $(NCURSES_SOURCE) -lncurses
+
+mac_ncurses_intel: dirs
+	$(CC) -arch x86_64 $(CFLAGS) -o $(MAC_NCURSES_INTEL_OUTPUT) $(NCURSES_SOURCE) -lncurses
 
 clean:
-	rm -f $(ARM64_OUTPUT)
-	rm -f $(INTEL_OUTPUT)
-	rm -f $(NCURSES_ARM64_OUTPUT)
-	rm -f $(NCURSES_INTEL_OUTPUT)
+	rm -f $(BIN_DIR)/serial_terminal*
 	rm -rf $(BUILD_DIR)/*
 
 help:
 	@echo ""
 	@echo "Serial Communications Build Targets"
 	@echo ""
-	@echo "  make              Build all targets"
-	@echo "  make arm64        Build Apple Silicon terminal"
-	@echo "  make intel        Build Intel Mac terminal"
-	@echo "  make ncurses_arm64"
-	@echo "  make ncurses_intel"
-	@echo "  make clean        Remove generated build files"
+	@echo "  make              Build for current machine"
+	@echo "  make host         Build standard and ncurses for current machine"
+	@echo "  make standard     Build standard version for current machine"
+	@echo "  make ncurses      Build ncurses version for current machine"
+	@echo "  make mac_all      Build Intel + ARM Mac binaries"
+	@echo "  make mac_arm64"
+	@echo "  make mac_intel"
+	@echo "  make clean"
 	@echo ""
