@@ -493,6 +493,7 @@ static void draw_static_screen(WINDOW *rx_window,
 
     box(rx_window, 0, 0);
     mvwprintw(rx_window, 0, 2, " RX FROM DEVICE ");
+    wmove(rx_window, 1, 1);
     wrefresh(rx_window);
 
     box(input_window, 0, 0);
