@@ -539,12 +539,14 @@ static void process_serial_character(WINDOW *rx_window,
     if (serial_char == ASCII_LINE_FEED)
     {
         waddch(rx_window, '\n');
+        wmove(rx_window, getcury(rx_window),1);
     }
     else
     {
         waddch(rx_window, serial_char);
     }
 
+    box(rx_window, 0,0);
     wrefresh(rx_window);
 }
 
@@ -716,6 +718,7 @@ int main(void)
     input_window = newwin(3, COLS, LINES - 3, 0);
 
     scrollok(rx_window, TRUE);
+    wsetscrreg(rx_window, 1, getmaxy(rx_window) - 2);
     keypad(input_window, TRUE);
     nodelay(input_window, TRUE);
 
