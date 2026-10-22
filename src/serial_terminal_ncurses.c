@@ -18,6 +18,24 @@
  *         - Adds status bar.
  *         - Sends clean commands only after ENTER.
  *         - Backspace edits local command buffer only.
+ *     2026-10-22:
+ *         - Normalize CR, LF and CRLF in received serial text.
+ *         - Separate scrolling RX content from its fixed ncurses border.
+ *         - Document NASA/JPL Power of Ten safety-oriented coding practices.
+ *
+ * ENGINEERING GUIDELINES (adapted from Gerard J. Holzmann's
+ * "The Power of Ten -- Rules for Developing Safety-Critical Code"):
+ *   1. Use simple, explicit control flow; avoid goto and recursion.
+ *   2. Keep all loops bounded where possible; review event loops carefully.
+ *   3. Avoid dynamic allocation after initialization when practicable.
+ *   4. Keep functions short and focused on one responsibility.
+ *   5. Add assertions for meaningful invariants where appropriate.
+ *   6. Use the smallest practical scope for data and variables.
+ *   7. Check return values and validate inputs and buffer boundaries.
+ *   8. Limit preprocessor use to headers, constants and platform guards.
+ *   9. Restrict pointer use and avoid unsafe pointer manipulation.
+ *  10. Compile with strong warnings and use static analysis when available.
+ * These are project review guidelines, not a claim of NASA certification.
  *
  ******************************************************************************/
 
@@ -474,6 +492,7 @@ static int configure_serial_port(int serial_fd,
  *     Draw ncurses terminal frame.
  ******************************************************************************/
 static void draw_static_screen(WINDOW *rx_window,
+                               WINDOW *rx_content,
                                WINDOW *input_window,
                                const char *port_name,
                                const serial_settings_t *settings)
@@ -493,9 +512,10 @@ static void draw_static_screen(WINDOW *rx_window,
 
     box(rx_window, 0, 0);
     mvwprintw(rx_window, 0, 2, " RX FROM DEVICE ");
-    wmove(rx_window, 1, 1);
     refresh();
     wrefresh(rx_window);
+    wmove(rx_content, 0, 0);
+    wrefresh(rx_content);
 
     box(input_window, 0, 0);
     mvwprintw(input_window, 0, 2, " COMMAND ENTRY ");
@@ -528,26 +548,43 @@ static void redraw_command_line(WINDOW *input_window,
  * PURPOSE:
  *     Print incoming device byte into RX window.
  ******************************************************************************/
-static void process_serial_character(WINDOW *rx_window,
-                                     unsigned char serial_char)
+/*
+ * RX display is a child window INSIDE the parent border.  Only the child
+ * scrolls, so serial text cannot overwrite the frame or its title.
+ * pending_cr prevents CRLF from creating two line breaks, while a lone
+ * carriage return still creates a new line.
+ */
+static void process_serial_character(WINDOW *rx_content,
+                                     unsigned char serial_char,
+                                     int *pending_cr)
 {
     if (serial_char == ASCII_CARRIAGE_RETURN)
     {
-        return;
+        waddch(rx_content, '\n');
+        *pending_cr = 1;
     }
-
-    if (serial_char == ASCII_LINE_FEED)
+    else if (serial_char == ASCII_LINE_FEED)
     {
-        waddch(rx_window, '\n');
-        wmove(rx_window, getcury(rx_window),1);
+        if (*pending_cr == 0)
+        {
+            waddch(rx_content, '\n');
+        }
+        *pending_cr = 0;
     }
     else
     {
-        waddch(rx_window, serial_char);
+        *pending_cr = 0;
+        if (serial_char >= 32 && serial_char != ASCII_DELETE)
+        {
+            waddch(rx_content, (chtype)serial_char);
+        }
+        else if (serial_char == '\t')
+        {
+            waddch(rx_content, '\t');
+        }
     }
 
-    box(rx_window, 0,0);
-    wrefresh(rx_window);
+    wrefresh(rx_content);
 }
 
 /******************************************************************************
@@ -644,7 +681,9 @@ int main(void)
     fd_set read_fd_set;
 
     WINDOW *rx_window;
+    WINDOW *rx_content;
     WINDOW *input_window;
+    int pending_cr;
 
     serial_settings_t settings;
 
@@ -654,6 +693,7 @@ int main(void)
 
     command_length = 0;
     exit_requested = 0;
+    pending_cr = 0;
 
     settings.baud_rate_constant = B115200;
     settings.baud_rate_number = 115200;
@@ -716,13 +756,37 @@ int main(void)
 
     rx_window = newwin(LINES - 5, COLS, 2, 0);
     input_window = newwin(3, COLS, LINES - 3, 0);
+    rx_content = NULL;
 
-    scrollok(rx_window, TRUE);
-    wsetscrreg(rx_window, 1, getmaxy(rx_window) - 2);
+    if (rx_window == NULL || input_window == NULL ||
+        LINES < 8 || COLS < 12)
+    {
+        if (rx_window != NULL) delwin(rx_window);
+        if (input_window != NULL) delwin(input_window);
+        endwin();
+        close(serial_fd);
+        fprintf(stderr, "Terminal must be at least 12 columns by 8 rows.\n");
+        return EXIT_FAILURE;
+    }
+
+    rx_content = derwin(rx_window, getmaxy(rx_window) - 2,
+                        getmaxx(rx_window) - 2, 1, 1);
+    if (rx_content == NULL)
+    {
+        delwin(rx_window);
+        delwin(input_window);
+        endwin();
+        close(serial_fd);
+        fprintf(stderr, "Could not create RX content window.\n");
+        return EXIT_FAILURE;
+    }
+
+    scrollok(rx_content, TRUE);
     keypad(input_window, TRUE);
     nodelay(input_window, TRUE);
 
     draw_static_screen(rx_window,
+                       rx_content,
                        input_window,
                        serial_ports[selected_port_index],
                        &settings);
@@ -777,12 +841,13 @@ int main(void)
 
             while (bytes_read > 0)
             {
-                process_serial_character(rx_window, serial_char);
+                process_serial_character(rx_content, serial_char, &pending_cr);
                 bytes_read = read(serial_fd, &serial_char, 1);
             }
         }
     }
 
+    delwin(rx_content);
     delwin(rx_window);
     delwin(input_window);
     endwin();
